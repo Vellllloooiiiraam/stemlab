@@ -1,0 +1,118 @@
+"""StemLab — configuração central e catálogo de modelos."""
+from __future__ import annotations
+
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+UPLOADS_DIR = BASE_DIR / "uploads"
+OUTPUT_DIR = BASE_DIR / "output"
+WEB_DIR = BASE_DIR / "web"
+JOBS_FILE = BASE_DIR / "jobs.json"
+
+HOST = "127.0.0.1"
+PORT = 8765
+
+MAX_UPLOAD_MB = 800
+
+ALLOWED_EXTENSIONS = {
+    ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".oga",
+    ".opus", ".wma", ".aiff", ".aif", ".mp4", ".mka", ".webm",
+}
+
+# Rótulos em português para cada faixa (stem) que o Demucs produz.
+STEM_LABELS = {
+    "vocals": "Voz",
+    "drums": "Bateria",
+    "bass": "Baixo",
+    "other": "Outros",
+    "guitar": "Guitarra",
+    "piano": "Piano",
+    "no_vocals": "Sem voz (playback)",
+}
+
+STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other", "no_vocals"]
+
+FOUR_STEMS = ["vocals", "drums", "bass", "other"]
+SIX_STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+
+# Catálogo real de modelos disponíveis no Demucs 4.1 (`demucs --list-models`).
+# "factor" é usado só para estimativa de tempo relativo.
+MODELS: list[dict] = [
+    {
+        "id": "htdemucs",
+        "label": "HT Demucs — 4 faixas",
+        "stems": FOUR_STEMS,
+        "note": "Padrão. Melhor equilíbrio entre qualidade e tempo.",
+        "factor": 1.0,
+        "tag": "recomendado",
+    },
+    {
+        "id": "htdemucs_ft",
+        "label": "HT Demucs FT — 4 faixas (alta qualidade)",
+        "stems": FOUR_STEMS,
+        "note": "Qualidade superior. Bem mais lento (cerca de 4x).",
+        "factor": 4.0,
+        "tag": "lento",
+    },
+    {
+        "id": "htdemucs_6s",
+        "label": "HT Demucs 6S — 6 faixas",
+        "stems": SIX_STEMS,
+        "note": "Separa também guitarra e piano, porém com qualidade menor nesses dois.",
+        "factor": 1.15,
+        "tag": "",
+    },
+    {
+        "id": "hdemucs_mmi",
+        "label": "Hybrid Demucs MMI — 4 faixas",
+        "stems": FOUR_STEMS,
+        "note": "Geração anterior do modelo híbrido.",
+        "factor": 1.0,
+        "tag": "",
+    },
+    {
+        "id": "mdx_extra",
+        "label": "MDX Extra — 4 faixas",
+        "stems": FOUR_STEMS,
+        "note": "Alternativa da família MDX, boa qualidade.",
+        "factor": 0.85,
+        "tag": "",
+    },
+    {
+        "id": "mdx_extra_q",
+        "label": "MDX Extra Q — 4 faixas (rápido)",
+        "stems": FOUR_STEMS,
+        "note": "Versão quantizada do MDX Extra.",
+        "factor": 0.6,
+        "tag": "rápido",
+    },
+    {
+        "id": "mdx_q",
+        "label": "MDX Q — 4 faixas (mais rápido)",
+        "stems": FOUR_STEMS,
+        "note": "O mais rápido do pacote. Qualidade abaixo do HT Demucs.",
+        "factor": 0.45,
+        "tag": "rápido",
+    },
+]
+
+MODEL_BY_ID = {m["id"]: m for m in MODELS}
+
+# Modelos que são conjuntos (bag) de 4 redes treinadas -> 4 passadas sequenciais.
+BAG_MODELS = {"htdemucs_ft"}
+
+
+def public_models() -> list[dict]:
+    """Catálogo exposto à interface (sem campos internos)."""
+    out = []
+    for m in MODELS:
+        out.append({
+            "id": m["id"],
+            "label": m["label"],
+            "stems": [
+                {"id": s, "label": STEM_LABELS.get(s, s)} for s in m["stems"]
+            ],
+            "note": m["note"],
+            "tag": m["tag"],
+        })
+    return out

@@ -1,0 +1,10 @@
+# StemLab — dependências (instaladas no ambiente .venv, Python 3.13)
+# torch/torchaudio vêm do índice CPU do PyTorch (não há CUDA nesta máquina).
+torch==2.14.1
+torchaudio==2.11.0
+demucs==4.1.0
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+soundfile==0.14.0
+numpy==2.5.4

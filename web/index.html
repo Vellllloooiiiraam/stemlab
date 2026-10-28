@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StemLab — separador de faixas</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◈</span>
+    <div>
+      <h1>StemLab</h1>
+      <p class="sub">Separação de faixas local · Demucs · roda no seu PC</p>
+    </div>
+  </div>
+  <div class="sysinfo" id="sysinfo">carregando…</div>
+</header>
+
+<main>
+  <!-- ============================= NOVA SEPARAÇÃO ============================= -->
+  <section class="card">
+    <h2>1. Escolha o áudio</h2>
+
+    <div id="dropzone" class="dropzone">
+      <input type="file" id="fileinput" hidden
+             accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.oga,.opus,.wma,.aif,.aiff,.mp4,.mka,.webm">
+      <div class="dz-inner">
+        <div class="dz-icon">⬆</div>
+        <p><strong>Arraste um arquivo aqui</strong> ou <button type="button" class="link" id="pick">escolha do PC</button></p>
+        <p class="hint">mp3 · wav · flac · m4a · ogg · opus — até 800 MB</p>
+      </div>
+    </div>
+
+    <div id="fileinfo" class="fileinfo hidden">
+      <span class="pill" id="fi-name"></span>
+      <span class="pill ghost" id="fi-meta"></span>
+      <button type="button" class="link" id="fi-clear">remover</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2. Configure a separação</h2>
+
+    <div class="grid">
+      <label class="field">
+        <span>Modelo</span>
+        <select id="model"></select>
+      </label>
+
+      <label class="field">
+        <span>Formato de saída</span>
+        <select id="format">
+          <option value="wav">WAV 16 bits (compatível)</option>
+          <option value="wav24">WAV 24 bits (melhor qualidade)</option>
+          <option value="flac">FLAC (sem perda, menor)</option>
+          <option value="mp3">MP3 (menor arquivo)</option>
+        </select>
+      </label>
+
+      <label class="field" id="bitrate-field" style="display:none">
+        <span>Bitrate do MP3</span>
+        <select id="bitrate">
+          <option value="320" selected>320 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="192">192 kbps</option>
+        </select>
+      </label>
+    </div>
+
+    <p class="note" id="model-note"></p>
+
+    <details class="advanced">
+      <summary>Opções avançadas</summary>
+      <div class="grid">
+        <label class="field">
+          <span>Qualidade (shifts)</span>
+          <select id="shifts">
+            <option value="0">0 — mais rápido</option>
+            <option value="1" selected>1 — padrão</option>
+            <option value="2">2 — melhor (dobra o tempo)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Sobreposição (overlap)</span>
+          <select id="overlap">
+            <option value="0.10">0.10 — rápido</option>
+            <option value="0.25" selected>0.25 — padrão</option>
+            <option value="0.50">0.50 — melhor</option>
+          </select>
+        </label>
+        <label class="field checkbox">
+          <input type="checkbox" id="karaoke">
+          <span>Modo karaokê (só voz + playback)</span>
+        </label>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button type="button" id="start" class="primary" disabled>Separar faixas</button>
+      <span class="est" id="estimate"></span>
+    </div>
+  </section>
+
+  <!-- ============================== TRABALHO ATIVO ============================= -->
+  <section class="card hidden" id="active-card">
+    <h2>Processando</h2>
+    <div class="jobline">
+      <span class="pill" id="ac-name"></span>
+      <span class="pill ghost" id="ac-model"></span>
+    </div>
+    <div class="progress"><div class="bar" id="ac-bar"></div></div>
+    <div class="jobmeta">
+      <span id="ac-msg">—</span>
+      <span id="ac-time" class="ghost"></span>
+    </div>
+    <div class="actions">
+      <button type="button" id="ac-cancel" class="danger">Cancelar</button>
+    </div>
+  </section>
+
+  <!-- ================================ PLAYER ================================= -->
+  <section class="card hidden" id="player-card">
+    <div class="player-head">
+      <h2 id="pl-title">Faixas</h2>
+      <div class="actions">
+        <a id="pl-zip" class="btn" href="#">Baixar tudo (.zip)</a>
+        <button type="button" class="btn ghost" id="pl-folder">Abrir pasta</button>
+        <button type="button" class="btn ghost" id="pl-close">Fechar</button>
+      </div>
+    </div>
+
+    <canvas id="wave" height="90"></canvas>
+
+    <div class="transport">
+      <button type="button" id="pl-play" class="round">▶</button>
+      <span class="time" id="pl-cur">0:00</span>
+      <input type="range" id="pl-seek" min="0" max="1000" value="0" step="1">
+      <span class="time" id="pl-dur">0:00</span>
+      <label class="volmaster">
+        🔊 <input type="range" id="pl-vol" min="0" max="1" step="0.01" value="1">
+      </label>
+      <label class="loopbox"><input type="checkbox" id="pl-loop"> repetir</label>
+    </div>
+
+    <div id="stems" class="stems"></div>
+    <p class="hint">Dica: <b>M</b> silencia a faixa, <b>S</b> isola só ela. Todas tocam sincronizadas.</p>
+  </section>
+
+  <!-- =============================== HISTÓRICO =============================== -->
+  <section class="card">
+    <div class="player-head">
+      <h2>Meus trabalhos</h2>
+      <button type="button" class="btn ghost" id="clear-finished">Limpar concluídos</button>
+    </div>
+    <div id="joblist" class="joblist"><p class="hint">Nenhum trabalho ainda.</p></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

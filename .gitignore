@@ -1,0 +1,29 @@
+# Ambiente virtual do Python
+.venv/
+venv/
+env/
+
+# Áudios enviados e faixas geradas (arquivos grandes, dados do usuário)
+uploads/
+output/
+
+# Histórico de trabalhos (estado local, contém caminhos da máquina)
+jobs.json
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Modelos baixados pelo Demucs
+models/
+*.th
+*.pt
+*.pth
+
+# Arquivos temporários / de sistema
+*.tmp
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

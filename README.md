@@ -1,0 +1,112 @@
+# StemLab
+
+Separador de faixas (stems) **local**, inspirado no fluxo do Moises, mas rodando
+inteiramente no seu PC. Você joga um áudio, escolhe o modelo e recebe as faixas
+separadas (voz, bateria, baixo, etc.) prontas para ouvir num player multipista
+com **mute/solo**, ou baixar.
+
+Motor de IA: [Demucs](https://github.com/facebookresearch/demucs) (Meta, código aberto).
+
+---
+
+## Como usar
+
+1. Dê dois cliques em **`Iniciar StemLab.bat`**
+2. O navegador abre sozinho em `http://127.0.0.1:8765`
+3. Arraste um arquivo de música → escolha o modelo → **Separar faixas**
+4. Quando terminar, clique em **Ouvir** para abrir o player
+
+Para encerrar: feche a janela preta (ou Ctrl+C nela).
+
+---
+
+## O que tem
+
+| Recurso | Descrição |
+|---|---|
+| Upload | Arraste e solte: mp3, wav, flac, m4a, ogg, opus, wma, aiff (até 800 MB) |
+| 7 modelos | De "mais rápido" a "alta qualidade" (tabela abaixo) |
+| 4 ou 6 faixas | Inclui modelo que separa **guitarra** e **piano** |
+| Modo karaokê | Só voz + playback (`--two-stems`) |
+| Formatos de saída | WAV 16/24 bits, FLAC, MP3 (até 320 kbps) |
+| Player multipista | Faixas sincronizadas, **M** (mute) e **S** (solo), volume por faixa, seek, repetir |
+| Waveform | Forma de onda desenhada no navegador |
+| Download | Faixa individual ou tudo em `.zip` |
+| Fila e histórico | Um trabalho por vez, cancelável, histórico persistente |
+| Atalhos | `Espaço` = play/pause · `#job=<id>` na URL abre direto um trabalho |
+
+---
+
+## Modelos disponíveis
+
+| Modelo | Faixas | Observação |
+|---|---|---|
+| `htdemucs` | 4 | **Padrão.** Melhor equilíbrio qualidade/tempo |
+| `htdemucs_ft` | 4 | Alta qualidade; ~4x mais lento |
+| `htdemucs_6s` | 6 | Separar também guitarra e piano (qualidade menor nesses dois) |
+| `hdemucs_mmi` | 4 | Geração anterior do modelo híbrido |
+| `mdx_extra` | 4 | Família MDX, boa qualidade |
+| `mdx_extra_q` | 4 | Versão quantizada, mais rápida |
+| `mdx_q` | 4 | O mais rápido do pacote |
+
+---
+
+## Onde ficam os arquivos
+
+```
+stemlab/
+├─ Iniciar StemLab.bat   ← use este
+├─ instalar.bat          ← recria o ambiente do zero
+├─ run.py                ← servidor
+├─ app/                  ← backend (FastAPI + Demucs)
+├─ web/                  ← interface (HTML/CSS/JS)
+├─ uploads/              ← áudios enviados
+├─ output/<id>/stems/    ← faixas geradas
+└─ jobs.json             ← histórico
+```
+
+---
+
+## Ambiente técnico (instalado nesta máquina)
+
+- **Python 3.13.17** isolado em `.venv` (o Python 3.15 do sistema **não** serve:
+  o PyTorch ainda não publica wheel para ele)
+- `torch 2.14.1+cpu` · `torchaudio 2.11.0+cpu` · `demucs 4.1.0` · `fastapi` · `uvicorn`
+- `ffmpeg 9.0.2` (via winget) — necessário para ler mp3/m4a
+
+### Desempenho
+
+Roda **100% em CPU**. A placa (Radeon RX 580) não tem CUDA, que é o único
+acelerador que o PyTorch usa no Windows — então não há aceleração por GPU.
+
+Referência medida: um áudio de **12 s** levou ~15–18 s com `htdemucs` e `shifts=0`
+(já com o modelo em cache). Música de 3–4 min com as configurações padrão
+(`shifts=1`) costuma levar de alguns minutos a ~15 min, dependendo do modelo.
+O `.zip` e o player aparecem assim que o trabalho termina.
+
+> Estimativas mostradas na interface são orientativas, não garantias.
+
+### Primeira execução
+
+Na primeira separação o Demucs baixa os pesos do modelo (~80 MB) do Hugging Face.
+A interface mostra "Carregando modelo (na primeira vez ele é baixado…)" — deixe rodar.
+
+---
+
+## Solução de problemas
+
+| Sintoma | Causa provável / solução |
+|---|---|
+| "ffmpeg ausente" no cabeçalho | Rode `winget install Gyan.FFmpeg` e reabra o `Iniciar StemLab.bat` |
+| Erro ao instalar o ambiente | Rode `instalar.bat`; ele recria `.venv` do zero |
+| Separação muito lenta | Use `mdx_q` ou `mdx_extra_q`, e `shifts = 0` |
+| "Formato não suportado" | Converta para wav/mp3 antes |
+| Porta 8765 ocupada | Feche outra instância do StemLab |
+
+---
+
+## Nota
+
+A análise de engenharia reversa que embasou as escolhas de produto está em
+[`ANALISE-REA.md`](ANALISE-REA.md). O StemLab foi construído do zero com
+tecnologia aberta — ele **não** é um clone do motor proprietário do Moises.
