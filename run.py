@@ -26,6 +26,25 @@ BANNER = r"""
 """
 
 
+def run_demucs(argv: list[str]) -> int:
+    """Modo Demucs: repassa os argumentos para `demucs.separate`.
+
+    O app chama o Demucs em um processo separado, então é aqui que o
+    substituto do `ffprobe` é instalado (ver `app/separator.py`).
+    """
+    sys.argv = ["demucs.separate"] + list(argv)
+
+    from app import separator
+
+    separator.locate_ffmpeg()
+    separator.install_ffprobe_compat()
+
+    from demucs.separate import main as demucs_main
+
+    demucs_main()
+    return 0
+
+
 def main() -> int:
     ensure_dirs()
 
@@ -56,6 +75,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--demucs":
+        raise SystemExit(run_demucs(sys.argv[2:]))
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from .config import ALLOWED_EXTENSIONS, BAG_MODELS, MODEL_BY_ID, STEM_ORDER
+from .config import ALLOWED_EXTENSIONS, BAG_MODELS, BASE_DIR, MODEL_BY_ID, STEM_ORDER
 
 PROGRESS_RE = re.compile(r"(\d{1,3})%")
 TRACK_RE = re.compile(r"Separating track\s+(.+)$")
@@ -71,16 +71,125 @@ def locate_ffmpeg() -> bool:
 
 
 def probe_duration(path: Path) -> Optional[float]:
-    """Duração em segundos via ffprobe, se disponível."""
+    """Duração em segundos.
+
+    Tenta, em ordem: soundfile (wav/flac/ogg/mp3) → ffprobe → ffmpeg.
+    Assim funciona mesmo quando só o `ffmpeg` está disponível.
+    """
     try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=60,
-        )
-        return float(json.loads(out.stdout)["format"]["duration"])
+        import soundfile as sf
+
+        return float(sf.info(str(path)).duration)
     except Exception:
-        return None
+        pass
+
+    if shutil.which("ffprobe"):
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            return float(json.loads(out.stdout)["format"]["duration"])
+        except Exception:
+            pass
+
+    ff = shutil.which("ffmpeg")
+    if ff:
+        try:
+            out = subprocess.run(
+                [ff, "-hide_banner", "-i", str(path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out.stderr or "")
+            if m:
+                return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        except Exception:
+            pass
+    return None
+
+
+def _probe_metadata(path) -> dict:
+    """Equivalente mínimo de `ffprobe -show_format -show_streams`, via ffmpeg.
+
+    O Demucs lê os metadados do arquivo chamando `ffprobe`. Quando esse binário
+    não existe (mas o `ffmpeg` sim), montamos a mesma estrutura a partir da
+    saída do próprio `ffmpeg`. As chaves usadas pelo Demucs são: `format.duration`,
+    `streams[].codec_type`, `channels` e `sample_rate`.
+    """
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RuntimeError("ffmpeg indisponível para ler os metadados do áudio.")
+
+    out = subprocess.run(
+        [ff, "-hide_banner", "-i", str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    text = out.stderr or ""
+
+    duration = 0.0
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if m:
+        duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+    layouts = {
+        "mono": 1, "stereo": 2, "2.1": 3, "quad": 4,
+        "5.0": 5, "5.1(side)": 6, "5.1": 6, "6.1": 7, "7.1": 8,
+    }
+
+    # A posição na lista tem de casar com o índice do stream no ffmpeg,
+    # portanto TODOS os streams entram (o Demucs mapeia `0:<posição>`).
+    streams: list[dict] = []
+    stream_re = re.compile(
+        r"Stream #\d+:(\d+)[^:\n]*:\s*([A-Za-z]+):\s*([^\n]*)"
+    )
+    for sm in stream_re.finditer(text):
+        index = int(sm.group(1))
+        kind = sm.group(2).lower()
+        attrs = sm.group(3)
+        entry: dict = {"index": index, "codec_type": kind}
+        if kind == "audio":
+            sr = re.search(r"(\d+)\s*Hz", attrs)
+            entry["sample_rate"] = int(sr.group(1)) if sr else 44100
+            nch = re.search(r"(\d+)\s*channels", attrs)
+            if nch:
+                entry["channels"] = int(nch.group(1))
+            else:
+                entry["channels"] = next(
+                    (n for name, n in layouts.items() if name in attrs), 2
+                )
+        streams.append(entry)
+
+    if not any(s["codec_type"] == "audio" for s in streams):
+        raise RuntimeError("Não encontrei nenhuma faixa de áudio no arquivo.")
+
+    return {"streams": streams, "format": {"duration": f"{duration:.6f}"}}
+
+
+def install_ffprobe_compat() -> None:
+    """Ensina o Demucs a ler metadados mesmo sem um `ffprobe` de verdade.
+
+    Precisa rodar NO processo que executa o Demucs (ele é um processo à parte).
+    Se existir um `ffprobe` real, ele continua sendo usado: o substituto só
+    entra em ação quando a chamada original falha.
+    """
+    try:
+        from demucs import audio as demucs_audio
+    except Exception:
+        return
+    if getattr(demucs_audio, "_stemlab_ffprobe_compat", False):
+        return
+
+    original = demucs_audio._read_info
+
+    def _read_info(path):
+        try:
+            return original(path)
+        except Exception:
+            return _probe_metadata(path)
+
+    demucs_audio._read_info = _read_info
+    demucs_audio._stemlab_ffprobe_compat = True
 
 
 def _safe_extension(name: str) -> str:
@@ -105,12 +214,16 @@ def build_command(
     segment: Optional[int] = None,
     karaoke: bool = False,
 ) -> list[str]:
-    """Monta os argumentos do `python -m demucs.separate`."""
+    """Monta os argumentos passados ao Demucs (via `run.py --demucs`).
+
+    Chamamos o próprio `run.py` em vez de `-m demucs.separate` para que o
+    processo do Demucs instale o substituto do `ffprobe` antes de começar.
+    """
     if model_id not in MODEL_BY_ID:
         raise SeparationError(f"Modelo desconhecido: {model_id}")
 
     cmd = [
-        python_executable(), "-m", "demucs.separate",
+        python_executable(), str(BASE_DIR / "run.py"), "--demucs",
         "-n", model_id,
         "-o", str(out_dir),
         "--filename", "{stem}.{ext}",
