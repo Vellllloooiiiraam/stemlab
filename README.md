@@ -24,7 +24,7 @@ Para encerrar: feche a janela preta (ou Ctrl+C nela).
 
 | Recurso | Descrição |
 |---|---|
-| Upload | Arraste e solte: mp3, wav, flac, m4a, ogg, opus, wma, aiff (até 800 MB) |
+| Upload | Arraste e solte: mp3, wav, flac, m4a, ogg, opus, wma, aiff, **mpeg/mpg** e vídeos mp4/webm (só o áudio é usado) — até 800 MB |
 | 7 modelos | De "mais rápido" a "alta qualidade" (tabela abaixo) |
 | 4 ou 6 faixas | Inclui modelo que separa **guitarra** e **piano** |
 | Modo karaokê | Só voz + playback (`--two-stems`) |

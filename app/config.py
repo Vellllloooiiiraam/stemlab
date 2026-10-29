@@ -15,8 +15,13 @@ PORT = 8765
 MAX_UPLOAD_MB = 800
 
 ALLOWED_EXTENSIONS = {
+    # áudio
     ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".oga",
-    ".opus", ".wma", ".aiff", ".aif", ".mp4", ".mka", ".webm",
+    ".opus", ".wma", ".aiff", ".aif",
+    # contêineres de vídeo (só o áudio é usado na separação)
+    ".mp4", ".mka", ".webm",
+    # família MPEG: vídeo (program stream) e áudio MPEG Layer II
+    ".mpeg", ".mpg", ".mpe", ".mp2", ".mpa",
 }
 
 # Rótulos em português para cada faixa (stem) que o Demucs produz.
