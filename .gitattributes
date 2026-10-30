@@ -1,0 +1,4 @@
+# Scripts do Windows (.bat) precisam terminar as linhas com CRLF,
+# senao o cmd.exe pode falhar em blocos e no "goto".
+*.bat text eol=crlf
+*.cmd text eol=crlf
