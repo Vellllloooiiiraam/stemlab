@@ -32,9 +32,11 @@ Para encerrar: feche a janela preta (ou Ctrl+C nela).
 | Modo karaokê | Só voz + playback (`--two-stems`) |
 | Formatos de saída | WAV 16/24 bits, FLAC, MP3 (até 320 kbps) |
 | Player multipista | Faixas sincronizadas, **M** (mute) e **S** (solo), volume por faixa, seek, repetir |
-| Waveform | Forma de onda desenhada no navegador |
+| Waveform | Forma de onda gerada no servidor (poucos pontos, o navegador não baixa o áudio inteiro) |
 | Download | Faixa individual ou tudo em `.zip` |
 | Fila e histórico | Um trabalho por vez, cancelável, histórico persistente |
+| Segurança | Só a interface local altera dados: cada sessão tem um token e o servidor recusa origem/host estranhos (anti-DNS-rebinding) |
+| Limpeza | “Limpar concluídos” remove o histórico; “Limpar temporários” apaga sobras e trabalhos com mais de 30 dias |
 | Atalhos | `Espaço` = play/pause · `#job=<id>` na URL abre direto um trabalho |
 
 ---
@@ -64,6 +66,7 @@ stemlab/
 ├─ web/                  ← interface (HTML/CSS/JS)
 ├─ build_exe.ps1         ← gera o executável portátil (opcional)
 ├─ stemlab.spec          ← receita do PyInstaller (usada pelo build)
+├─ CHANGELOG.md          ← histórico de versões
 ├─ uploads/              ← áudios enviados
 ├─ output/<id>/stems/    ← faixas geradas
 └─ jobs.json             ← histórico
@@ -75,7 +78,7 @@ stemlab/
 
 - **Python 3.13.17** isolado em `.venv` (o Python 3.15 do sistema **não** serve:
   o PyTorch ainda não publica wheel para ele)
-- `torch 2.14.1+cpu` · `torchaudio 2.11.0+cpu` · `demucs 4.1.0` · `fastapi` · `uvicorn`
+- `torch 2.15.0+cpu` · `torchaudio 2.11.1+cpu` · `demucs 4.1.0` · `fastapi` · `uvicorn`
 - `ffmpeg 9.0.2` (via winget) — necessário para ler mp3/m4a
 
 ### Desempenho

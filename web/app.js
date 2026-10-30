@@ -19,7 +19,25 @@ const fmtBytes = (b) => {
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
 };
 
+let sessionToken = null;
+
+async function getToken() {
+  if (sessionToken) return sessionToken;
+  const res = await fetch("/api/session");
+  if (!res.ok) throw new Error("Não foi possível obter o token da sessão.");
+  sessionToken = (await res.json()).token;
+  return sessionToken;
+}
+
 async function api(path, opts) {
+  opts = opts || {};
+  const method = (opts.method || "GET").toUpperCase();
+  // Rotas que alteram dados exigem o token da sessão (proteção local).
+  if (method !== "GET" && method !== "HEAD") {
+    const headers = new Headers(opts.headers || {});
+    headers.set("X-StemLab-Token", await getToken());
+    opts = Object.assign({}, opts, { headers });
+  }
   const res = await fetch(path, opts);
   const text = await res.text();
   let data = null;
@@ -358,7 +376,7 @@ async function openPlayer(job) {
 
   stems.forEach((s, i) => {
     const audio = new Audio(s.url);
-    audio.preload = "auto";
+    audio.preload = "metadata";   // não baixar o áudio inteiro antes de tocar
     audio.volume = 1;
     s.audio = audio;
     s.audio.addEventListener("loadedmetadata", () => {
@@ -430,7 +448,7 @@ async function openPlayer(job) {
   $("pl-seek").value = 0;
   $("pl-cur").textContent = "0:00";
 
-  drawWaveform(stems[0].url, $("wave"));
+  drawWaveform(player.jobId, stems[0], $("wave"));
   card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -490,7 +508,7 @@ function closePlayer() {
 }
 
 /* ============================================================= waveform === */
-async function drawWaveform(url, canvas) {
+async function drawWaveform(jobId, stem, canvas) {
   const ctx2d = canvas.getContext("2d");
   const w = canvas.clientWidth || 900;
   const dpr = window.devicePixelRatio || 1;
@@ -500,28 +518,19 @@ async function drawWaveform(url, canvas) {
   ctx2d.clearRect(0, 0, w, 90);
 
   try {
-    const res = await fetch(url);
-    const buf = await res.arrayBuffer();
-    const AC = window.AudioContext || window.webkitAudioContext;
-    const ac = new AC();
-    const decoded = await ac.decodeAudioData(buf);
-    const data = decoded.getChannelData(0);
+    // Picos reduzidos vindos do servidor (não baixamos/decodificamos o áudio).
+    const data = await api(`/api/waveform/${jobId}/${encodeURIComponent(stem.file)}?points=1200`);
+    const peaks = (data && data.points) || [];
+    if (!peaks.length) throw new Error("sem dados");
+
     const mid = 45, barW = 2, gap = 1;
     const cols = Math.floor(w / (barW + gap));
-    const step = Math.max(1, Math.floor(data.length / cols));
-
     ctx2d.fillStyle = "rgba(74,222,128,.55)";
     for (let c = 0; c < cols; c++) {
-      let peak = 0;
-      const start = c * step;
-      for (let i = 0; i < step; i += 8) {
-        const v = Math.abs(data[start + i] || 0);
-        if (v > peak) peak = v;
-      }
-      const h = Math.max(2, peak * 42);
+      const v = peaks[Math.min(peaks.length - 1, Math.floor((c / cols) * peaks.length))] || 0;
+      const h = Math.max(2, v * 42);
       ctx2d.fillRect(c * (barW + gap), mid - h, barW, h * 2);
     }
-    await ac.close();
   } catch (e) {
     ctx2d.fillStyle = "#93a1b5";
     ctx2d.font = "12px Segoe UI";
@@ -567,6 +576,21 @@ function setupControls() {
   $("clear-finished").addEventListener("click", async () => {
     try { await api("/api/jobs/clear-finished", { method: "POST" }); poll(); }
     catch (e) { alert(e.message); }
+  });
+
+  $("clean-temp").addEventListener("click", async () => {
+    try {
+      const r = await api("/api/maintenance/cleanup", { method: "POST" });
+      const mb = (r.freed_bytes / (1024 * 1024)).toFixed(1);
+      alert(
+        `Limpeza concluída.\n` +
+        `Trabalhos expirados removidos: ${r.removed_jobs}\n` +
+        `Envios órfãos: ${r.orphan_uploads}\n` +
+        `Pastas órfãs: ${r.orphan_dirs}\n` +
+        `Espaço liberado: ${mb} MB`
+      );
+      poll();
+    } catch (e) { alert(e.message); }
   });
 
   document.addEventListener("keydown", (e) => {

@@ -1,8 +1,11 @@
 """API HTTP + servidor da interface (FastAPI)."""
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import time
@@ -10,15 +13,19 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import separator
 from .config import (
     ALLOWED_EXTENSIONS,
+    MAX_CONCURRENT_UPLOADS,
+    MAX_DURATION_S,
     MAX_UPLOAD_MB,
+    MIN_FREE_MB,
     MODEL_BY_ID,
     OUTPUT_DIR,
     STEM_LABELS,
@@ -28,8 +35,35 @@ from .config import (
 )
 from .jobs import ensure_dirs, manager
 
-app = FastAPI(title="StemLab", version="1.0.0")
+app = FastAPI(title="StemLab", version="1.3.0")
 ensure_dirs()
+
+# ------------------------------------------------------------- proteção local
+# Token por sessão: só a interface servida pela própria máquina consegue lê-lo
+# (não há CORS, então outra origem não lê a resposta de /api/session). Toda rota
+# que altera dados exige o cabeçalho X-StemLab-Token. O token nunca é logado.
+SESSION_TOKEN = secrets.token_urlsafe(32)
+
+_ALLOWED_HOSTS = {"127.0.0.1:8765", "localhost:8765", "127.0.0.1", "localhost"}
+_ALLOWED_ORIGINS = {"http://127.0.0.1:8765", "http://localhost:8765"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def _guard(request: Request, call_next):
+    # 1) Host: bloqueia DNS rebinding (domínio externo apontando para 127.0.0.1).
+    if request.headers.get("host", "") not in _ALLOWED_HOSTS:
+        return PlainTextResponse("Host não permitido.", status_code=400)
+
+    # 2) Para métodos que alteram dados: exigir token e conferir a origem.
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin and origin not in _ALLOWED_ORIGINS:
+            return PlainTextResponse("Origem não autorizada.", status_code=403)
+        if request.headers.get("x-stemlab-token") != SESSION_TOKEN:
+            return PlainTextResponse("Token ausente ou inválido.", status_code=403)
+
+    return await call_next(request)
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -37,6 +71,21 @@ SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 def _safe(name: str) -> str:
     cleaned = SAFE_NAME.sub("_", Path(name).name).strip(" .")
     return cleaned or "audio"
+
+
+def _remove_file(path: Path) -> None:
+    """Apaga um arquivo temporário, ignorando erros (ex.: já removido)."""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------- sessão
+@app.get("/api/session")
+def get_session():
+    """Entrega o token à interface local (GET simples, sem CORS)."""
+    return {"token": SESSION_TOKEN}
 
 
 # --------------------------------------------------------------------- modelos
@@ -55,7 +104,7 @@ def get_system():
         "python": sys.version.split()[0],
         "platform": f"{platform.system()} {platform.release()}",
         "cpu_count": os.cpu_count(),
-        "ffmpeg": shutil.which("ffmpeg") or None,
+        "ffmpeg": bool(shutil.which("ffmpeg")),   # só se está disponível, sem o caminho
         "torch": None,
         "device": "cpu",
         "gpu_note": None,
@@ -82,6 +131,9 @@ def health():
 
 
 # --------------------------------------------------------------------- upload
+_UPLOAD_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
@@ -90,6 +142,19 @@ async def upload(file: UploadFile = File(...)):
             status_code=400,
             detail=f"Formato '{ext or '?'}' não suportado.",
         )
+
+    # Espaço em disco: não aceitar se estiver quase cheio.
+    free_mb = shutil.disk_usage(str(UPLOADS_DIR)).free / (1024 * 1024)
+    if free_mb < MIN_FREE_MB:
+        raise HTTPException(507, "Pouco espaço em disco para receber o arquivo.")
+
+    # Limita envios simultâneos (espera curta; depois recusa).
+    acquired = False
+    try:
+        await asyncio.wait_for(_UPLOAD_SLOTS.acquire(), timeout=10)
+        acquired = True
+    except asyncio.TimeoutError:
+        raise HTTPException(429, "Muitos envios ao mesmo tempo. Tente novamente.")
 
     stored = f"{uuid.uuid4().hex[:10]}__{_safe(file.filename or 'audio' + ext)}"
     dest = UPLOADS_DIR / stored
@@ -104,20 +169,35 @@ async def upload(file: UploadFile = File(...)):
                     break
                 written += len(chunk)
                 if written > limit:
-                    fh.close()
-                    dest.unlink(missing_ok=True)
                     raise HTTPException(413, f"Arquivo acima de {MAX_UPLOAD_MB} MB.")
                 fh.write(chunk)
+
+        if written == 0:
+            raise HTTPException(400, "Arquivo vazio.")
+
+        # Valida o CONTEÚDO, não só a extensão: precisa ser áudio reconhecível.
+        try:
+            duration = separator.validate_audio(dest)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+        if duration > MAX_DURATION_S:
+            raise HTTPException(
+                400,
+                f"Áudio muito longo ({duration / 3600:.1f}h). "
+                f"Limite: {MAX_DURATION_S // 3600}h.",
+            )
     except HTTPException:
+        _remove_file(dest)          # nunca deixar um arquivo rejeitado no disco
+        raise
+    except Exception:
+        _remove_file(dest)
         raise
     finally:
         await file.close()
+        if acquired:
+            _UPLOAD_SLOTS.release()
 
-    if written == 0:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(400, "Arquivo vazio.")
-
-    duration = separator.probe_duration(dest)
     return {
         "file": stored,
         "name": Path(file.filename or stored).name,
@@ -194,6 +274,19 @@ def clear_finished():
     return {"removed": manager.clear_finished()}
 
 
+@app.post("/api/maintenance/cleanup")
+def maintenance_cleanup():
+    """Limpeza sob demanda: órfãos (uploads/pastas sem trabalho) + expirados."""
+    orphan = manager.cleanup_orphans()
+    expired = manager.purge_expired()
+    return {
+        "removed_jobs": expired,
+        "orphan_uploads": orphan["uploads"],
+        "orphan_dirs": orphan["dirs"],
+        "freed_bytes": orphan["freed_bytes"],
+    }
+
+
 @app.post("/api/jobs/{job_id}/reveal")
 def reveal_job(job_id: str):
     job = manager.get(job_id)
@@ -205,7 +298,7 @@ def reveal_job(job_id: str):
         os.startfile(str(target))  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"Não foi possível abrir a pasta: {exc}")
-    return {"ok": True, "path": str(target)}
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------- mídia
@@ -234,6 +327,37 @@ def get_source(job_id: str):
     return FileResponse(path)
 
 
+@app.get("/api/waveform/{job_id}/{name}")
+def get_waveform(job_id: str, name: str, points: int = 1200):
+    """Picos da forma de onda (poucos pontos) — evita decodificar tudo no navegador."""
+    job = manager.get(job_id)
+    if not job:
+        raise HTTPException(404, "Trabalho não encontrado.")
+    path = job.work_dir / "stems" / Path(name).name
+    if not path.is_file():
+        raise HTTPException(404, "Faixa não encontrada.")
+
+    points = max(200, min(3000, int(points)))
+    cache = job.work_dir / "waveforms" / f"{path.name}.{points}.json"
+    if cache.is_file():
+        try:
+            return {"points": json.loads(cache.read_text(encoding="utf-8"))}
+        except (OSError, ValueError):
+            pass
+
+    try:
+        peaks = separator.waveform_peaks(path, points)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Não foi possível gerar a forma de onda: {exc}")
+
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(peaks), encoding="utf-8")
+    except OSError:
+        pass
+    return {"points": peaks}
+
+
 @app.get("/api/jobs/{job_id}/zip")
 def get_zip(job_id: str):
     job = manager.get(job_id)
@@ -243,15 +367,28 @@ def get_zip(job_id: str):
     if not stems.is_dir() or not job.stems:
         raise HTTPException(409, "Este trabalho ainda não tem faixas prontas.")
 
-    tmp = Path(tempfile.gettempdir()) / f"stemlab_{job_id}.zip"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
-        for item in job.stems:
-            f = stems / item["file"]
-            if f.is_file():
-                zf.write(f, arcname=f"{Path(job.display_name).stem}/{f.name}")
+    # Nome único (mkstemp) evita colisão entre downloads simultâneos do mesmo
+    # trabalho. O arquivo é apagado no fim da resposta (BackgroundTask).
+    fd, tmp_name = tempfile.mkstemp(prefix=f"stemlab_{job_id}_", suffix=".zip")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
+            for item in job.stems:
+                f = stems / item["file"]
+                if f.is_file():
+                    zf.write(f, arcname=f"{Path(job.display_name).stem}/{f.name}")
+    except Exception:
+        _remove_file(tmp)   # não deixar lixo se a geração falhar
+        raise
 
     name = f"{Path(job.display_name).stem}_{job.model}.zip"
-    return FileResponse(tmp, media_type="application/zip", filename=name)
+    return FileResponse(
+        tmp,
+        media_type="application/zip",
+        filename=name,
+        background=BackgroundTask(_remove_file, tmp),
+    )
 
 
 # ---------------------------------------------------------------- interface web

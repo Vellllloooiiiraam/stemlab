@@ -16,7 +16,9 @@ from . import separator
 from .config import (
     JOBS_FILE,
     MODEL_BY_ID,
+    ORPHAN_MIN_AGE_H,
     OUTPUT_DIR,
+    RETENTION_DAYS,
     STEM_LABELS,
     UPLOADS_DIR,
 )
@@ -61,12 +63,34 @@ class Job:
         return name
 
     def to_public(self) -> dict:
-        data = asdict(self)
+        """Representação exposta pela API.
+
+        Construída campo a campo de propósito: NUNCA inclui `source_path`
+        (o caminho absoluto do arquivo no computador do usuário).
+        """
+        data = {
+            "id": self.id,
+            "source_name": self.source_name,
+            "model": self.model,
+            "options": self.options,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration": self.duration,
+            "estimate": self.estimate,
+            "elapsed": self.elapsed,
+            "error": self.error,
+        }
         data["display_name"] = self.display_name
         data["source_url"] = f"/api/source/{self.id}"
         data["model_label"] = MODEL_BY_ID.get(self.model, {}).get("label", self.model)
-        for s in data["stems"]:
-            s["label"] = STEM_LABELS.get(s["stem"], s["stem"])
+        data["stems"] = [
+            {**s, "label": STEM_LABELS.get(s["stem"], s["stem"])}
+            for s in self.stems
+        ]
         return data
 
 
@@ -155,6 +179,82 @@ class JobManager:
             self.delete(jid)
         return len(done)
 
+    def purge_expired(self, days: float = RETENTION_DAYS) -> int:
+        """Remove trabalhos finalizados mais antigos que `days` dias.
+
+        Trabalhos em execução/na fila nunca são tocados. Retorna quantos saíram.
+        """
+        if days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        with self._lock:
+            expired = [
+                j.id for j in self._jobs.values()
+                if j.status in (DONE, ERROR, CANCELED)
+                and (j.finished_at or j.created_at) < cutoff
+            ]
+        for jid in expired:
+            self.delete(jid)
+        return len(expired)
+
+    def cleanup_orphans(self, *, min_age_h: float = ORPHAN_MIN_AGE_H) -> dict:
+        """Remove sobras que não pertencem a nenhum trabalho.
+
+        - Envios em `uploads/` sem trabalho correspondente (mais velhos que
+          `min_age_h` horas, para não apagar algo recém-enviado).
+        - Pastas em `output/` cujo nome não corresponde a nenhum trabalho.
+
+        Trabalhos em execução/na fila e seus arquivos são sempre preservados.
+        Retorna o que foi removido.
+        """
+        now = time.time()
+        min_age_s = max(0.0, min_age_h) * 3600
+
+        with self._lock:
+            known_ids = set(self._jobs.keys())
+            referenced = {Path(j.source_path).name for j in self._jobs.values()}
+
+        removed_uploads = 0
+        removed_dirs = 0
+        freed = 0
+
+        try:
+            for entry in UPLOADS_DIR.iterdir():
+                if not entry.is_file() or entry.name in referenced:
+                    continue
+                try:
+                    st = entry.stat()
+                    if now - st.st_mtime < min_age_s:
+                        continue
+                    freed += st.st_size
+                    entry.unlink()
+                    removed_uploads += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+        try:
+            for entry in OUTPUT_DIR.iterdir():
+                if not entry.is_dir() or entry.name in known_ids:
+                    continue
+                try:
+                    size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
+                    shutil.rmtree(entry, ignore_errors=True)
+                    if not entry.exists():
+                        freed += size
+                        removed_dirs += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+        return {
+            "uploads": removed_uploads,
+            "dirs": removed_dirs,
+            "freed_bytes": freed,
+        }
+
     # --------------------------------------------------------------------- worker
     def _run_loop(self) -> None:
         while True:
@@ -183,32 +283,7 @@ class JobManager:
             job.message = "Carregando modelo (na primeira vez ele é baixado, ~80 MB)..."
             self._save()
 
-        source = Path(job.source_path)
         work = job.work_dir
-        shutil.rmtree(work, ignore_errors=True)
-        work.mkdir(parents=True, exist_ok=True)
-
-        opts = job.options or {}
-        model_id = job.model
-        shifts = int(opts.get("shifts", 1))
-        karaoke = bool(opts.get("karaoke", False))
-
-        if job.duration is None:
-            job.duration = separator.probe_duration(source)
-        job.estimate = separator.estimate_seconds(job.duration, model_id, shifts)
-
-        cmd = separator.build_command(
-            source,
-            work,
-            model_id,
-            format=str(opts.get("format", "wav")),
-            mp3_bitrate=int(opts.get("mp3_bitrate", 320)),
-            shifts=shifts,
-            overlap=float(opts.get("overlap", 0.25)),
-            segment=opts.get("segment"),
-            karaoke=karaoke,
-        )
-
         last_save = [0.0]
 
         def on_progress(pct: int, message: str) -> None:
@@ -231,6 +306,36 @@ class JobManager:
                     self._procs[job.id] = proc
 
         try:
+            # Toda a preparação fica DENTRO do try: se algo falhar aqui (disco
+            # cheio ao criar a pasta, arquivo ilegível, comando inválido...), a
+            # tarefa precisa terminar em ERROR em vez de ficar presa em RUNNING.
+            source = Path(job.source_path)
+            shutil.rmtree(work, ignore_errors=True)
+            work.mkdir(parents=True, exist_ok=True)
+
+            opts = job.options or {}
+            model_id = job.model
+            if model_id not in MODEL_BY_ID:
+                raise separator.SeparationError(f"Modelo desconhecido: {model_id}")
+            shifts = int(opts.get("shifts", 1))
+            karaoke = bool(opts.get("karaoke", False))
+
+            if job.duration is None:
+                job.duration = separator.probe_duration(source)
+            job.estimate = separator.estimate_seconds(job.duration, model_id, shifts)
+
+            cmd = separator.build_command(
+                source,
+                work,
+                model_id,
+                format=str(opts.get("format", "wav")),
+                mp3_bitrate=int(opts.get("mp3_bitrate", 320)),
+                shifts=shifts,
+                overlap=float(opts.get("overlap", 0.25)),
+                segment=opts.get("segment"),
+                karaoke=karaoke,
+            )
+
             produced = separator.run_separation(
                 cmd,
                 work,
@@ -241,33 +346,30 @@ class JobManager:
                 on_process=on_process,
             )
         except separator.Cancelled:
-            with self._lock:
-                job.status = CANCELED
-                job.message = "Cancelado pelo usuário."
-                job.finished_at = time.time()
-                job.elapsed = (job.finished_at - job.started_at) if job.started_at else None
-                self._cancel_flags.discard(job.id)
-                self._save()
             shutil.rmtree(work, ignore_errors=True)
+            self._finish(job, CANCELED, message="Cancelado pelo usuário.")
             return
         except separator.SeparationError as exc:
-            with self._lock:
-                job.status = ERROR
-                job.error = str(exc)
-                job.message = str(exc)
-                job.finished_at = time.time()
-                job.elapsed = (job.finished_at - job.started_at) if job.started_at else None
-                self._cancel_flags.discard(job.id)
-                self._save()
+            self._finish(job, ERROR, error=str(exc), message=str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            with self._lock:
-                job.status = ERROR
-                job.error = f"{type(exc).__name__}: {exc}"
-                job.message = "Erro inesperado."
-                job.finished_at = time.time()
-                self._save()
             traceback.print_exc()
+            self._finish(
+                job, ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+                message="Erro inesperado.",
+            )
+            return
+        finally:
+            # Nenhum processo externo pode ficar rodando solto.
+            proc = self._procs.pop(job.id, None)
+            if proc is not None:
+                separator._terminate(proc)  # type: ignore[arg-type]
+
+        # Cancelamento pedido bem no fim da separação: não marcar como concluído.
+        if is_cancelled():
+            shutil.rmtree(work, ignore_errors=True)
+            self._finish(job, CANCELED, message="Cancelado pelo usuário.")
             return
 
         with self._lock:
@@ -283,6 +385,25 @@ class JobManager:
             job.status = DONE
             job.progress = 100
             job.message = "Concluído."
+            job.finished_at = time.time()
+            job.elapsed = (job.finished_at - job.started_at) if job.started_at else None
+            self._cancel_flags.discard(job.id)
+            self._save()
+
+    def _finish(
+        self,
+        job: Job,
+        status: str,
+        *,
+        message: str,
+        error: Optional[str] = None,
+    ) -> None:
+        """Consolida o estado final (ERROR/CANCELED) de uma tarefa."""
+        with self._lock:
+            job.status = status
+            job.message = message
+            if error:
+                job.error = error
             job.finished_at = time.time()
             job.elapsed = (job.finished_at - job.started_at) if job.started_at else None
             self._cancel_flags.discard(job.id)

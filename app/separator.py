@@ -1,16 +1,26 @@
 """Ponte com o Demucs: monta o comando, executa e lê o progresso."""
 from __future__ import annotations
 
+import array
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .config import ALLOWED_EXTENSIONS, BAG_MODELS, BASE_DIR, MODEL_BY_ID, STEM_ORDER
+from .config import (
+    ALLOWED_EXTENSIONS,
+    BAG_MODELS,
+    BASE_DIR,
+    MAX_JOB_S,
+    MODEL_BY_ID,
+    STEM_ORDER,
+)
 
 PROGRESS_RE = re.compile(r"(\d{1,3})%")
 TRACK_RE = re.compile(r"Separating track\s+(.+)$")
@@ -134,6 +144,53 @@ def probe_duration(path: Path) -> Optional[float]:
         except Exception:
             pass
     return None
+
+
+def validate_audio(path: Path) -> float:
+    """Duração (s) se o arquivo for áudio válido; senão levanta ValueError.
+
+    Diferente de `probe_duration`, exige que exista uma faixa de áudio de
+    verdade — um vídeo sem áudio ou um texto renomeado para `.mp3` são
+    rejeitados.
+    """
+    # 1) soundfile: rápido e confiável para wav/flac/ogg/mp3.
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+        if info.frames > 0 and info.samplerate > 0:
+            return float(info.duration)
+    except Exception:
+        pass
+
+    # 2) ffprobe: precisa de uma faixa de áudio.
+    if shutil.which("ffprobe"):
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=codec_type",
+                 "-show_entries", "format=duration",
+                 "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            data = json.loads(out.stdout or "{}")
+            if data.get("streams") and data.get("format", {}).get("duration"):
+                dur = float(data["format"]["duration"])
+                if dur > 0:
+                    return dur
+        except Exception:
+            pass
+
+    # 3) ffmpeg: confirma a existência de áudio e lê a duração.
+    if shutil.which("ffmpeg"):
+        try:
+            dur = float(_probe_metadata(path)["format"]["duration"])
+            if dur > 0:
+                return dur
+        except Exception:
+            pass
+
+    raise ValueError("O arquivo não parece ser um áudio válido.")
 
 
 def _probe_metadata(path) -> dict:
@@ -271,7 +328,9 @@ def build_command(
     elif format == "wav24":
         cmd += ["--int24"]
 
-    cmd.append(str(source))
+    # `--` encerra a leitura de opções: o caminho do arquivo é sempre tratado
+    # como posicional, mesmo que o nome comece com "-".
+    cmd += ["--", str(source)]
     return cmd
 
 
@@ -304,8 +363,15 @@ def run_separation(
     on_progress: Callable[[int, str], None],
     is_cancelled: Callable[[], bool],
     on_process: Callable[[Optional[subprocess.Popen]], None] = lambda p: None,
+    timeout_s: Optional[float] = None,
 ) -> list[Path]:
-    """Executa o Demucs, reporta progresso e devolve os arquivos gerados."""
+    """Executa o Demucs, reporta progresso e devolve os arquivos gerados.
+
+    Os argumentos vão em lista (nunca `shell=True`), então nomes com espaços ou
+    caracteres especiais são tratados literalmente. Um watchdog encerra o
+    processo em caso de cancelamento — mesmo se a saída ficar silenciosa — ou
+    ao estourar o tempo máximo.
+    """
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
     cores = str(max(1, (os.cpu_count() or 4)))
@@ -370,32 +436,61 @@ def run_separation(
             on_progress(5 + int((bar_index / max(1, passes)) * 88), last_message)
 
     fd = proc.stdout.fileno()
+    # Watchdog: encerra o processo se o usuário cancelar (mesmo com saída
+    # silenciosa, quando o `os.read` ficaria bloqueado) ou se estourar o tempo.
+    deadline = time.time() + (timeout_s if timeout_s is not None else MAX_JOB_S)
+    timed_out = {"v": False}
+    stop_watch = threading.Event()
+
+    def _watch() -> None:
+        while not stop_watch.wait(0.5):
+            if is_cancelled():
+                _terminate(proc)
+                return
+            if time.time() >= deadline:
+                timed_out["v"] = True
+                _terminate(proc)
+                return
+
+    watcher = threading.Thread(target=_watch, name="stemlab-demucs-watchdog", daemon=True)
+    watcher.start()
+
+    fd = proc.stdout.fileno()
     buf = b""
-    while True:
-        if is_cancelled():
-            _terminate(proc)
-            raise Cancelled()
-
-        try:
-            chunk = os.read(fd, 512)
-        except OSError:
-            break
-        if not chunk:
-            break
-        buf += chunk
+    try:
         while True:
-            positions = [p for p in (buf.find(b"\r"), buf.find(b"\n")) if p != -1]
-            if not positions:
-                break
-            cut = min(positions)
-            handle_line(buf[:cut].decode("utf-8", "replace"))
-            buf = buf[cut + 1:]
-    if buf:
-        handle_line(buf.decode("utf-8", "replace"))
+            if is_cancelled():
+                _terminate(proc)
+                raise Cancelled()
 
-    proc.wait()
+            try:
+                chunk = os.read(fd, 512)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                positions = [p for p in (buf.find(b"\r"), buf.find(b"\n")) if p != -1]
+                if not positions:
+                    break
+                cut = min(positions)
+                handle_line(buf[:cut].decode("utf-8", "replace"))
+                buf = buf[cut + 1:]
+        if buf:
+            handle_line(buf.decode("utf-8", "replace"))
+
+        proc.wait()
+    finally:
+        stop_watch.set()
+        watcher.join(timeout=2)
+
     on_process(None)
 
+    if timed_out["v"]:
+        secs = int(timeout_s if timeout_s is not None else MAX_JOB_S)
+        human = f"{secs // 60} min" if secs >= 60 else f"{secs} s"
+        raise SeparationError(f"Tempo máximo de execução excedido ({human}).")
     if is_cancelled():
         raise Cancelled()
     if proc.returncode != 0:
@@ -404,6 +499,64 @@ def run_separation(
 
     on_progress(95, "Movendo arquivos gerados...")
     return _collect_outputs(work_root, model_id)
+
+
+def waveform_peaks(path: Path, points: int = 1200, *, sample_rate: int = 8000) -> list[float]:
+    """Picos normalizados (0..1) para a forma de onda.
+
+    Decodifica o áudio no servidor por streaming (ffmpeg) e reduz a poucas
+    amostras, para o navegador não precisar baixar/decodificar o arquivo
+    inteiro. O resultado é cacheado em disco pela camada HTTP.
+    """
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RuntimeError("ffmpeg indisponível para gerar a forma de onda.")
+    duration = probe_duration(path)
+    if not duration or duration <= 0:
+        raise ValueError("não foi possível determinar a duração do áudio.")
+
+    points = max(1, int(points))
+    total = max(1, int(duration * sample_rate))
+    step = max(1, total // points)
+
+    proc = subprocess.Popen(
+        [ff, "-v", "error", "-i", str(path), "-ac", "1",
+         "-ar", str(sample_rate), "-f", "s16le", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+    )
+    peaks = [0] * points
+    try:
+        leftover = b""
+        index = 0
+        while True:
+            chunk = proc.stdout.read(1 << 16)
+            if not chunk:
+                break
+            data = leftover + chunk
+            if len(data) % 2:
+                leftover = data[-1:]
+                data = data[:-1]
+            else:
+                leftover = b""
+            if not data:
+                continue
+            samples = array.array("h")
+            samples.frombytes(data)
+            for v in samples:
+                bucket = index // step
+                if bucket >= points:
+                    bucket = points - 1
+                av = v if v >= 0 else -v
+                if av > peaks[bucket]:
+                    peaks[bucket] = av
+                index += 1
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        proc.wait()
+
+    top = max(peaks) or 1
+    return [p / top for p in peaks]
 
 
 def _terminate(proc: subprocess.Popen) -> None:

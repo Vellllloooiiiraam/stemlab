@@ -33,6 +33,22 @@ PORT = 8765
 
 MAX_UPLOAD_MB = 800
 
+# Política de duração: arquivos muito longos consomem disco e CPU demais.
+MAX_DURATION_S = 3 * 60 * 60   # 3 horas
+# Espaço livre mínimo exigido no disco antes de aceitar um envio.
+MIN_FREE_MB = 500
+# Envios simultâneos permitidos.
+MAX_CONCURRENT_UPLOADS = 4
+# Tempo máximo de uma separação (evita processo preso indefinidamente).
+MAX_JOB_S = 6 * 60 * 60   # 6 horas
+
+# Retenção: trabalhos concluídos mais antigos que isto são removidos sozinhos
+# (0 desativa a remoção automática; o usuário ainda pode limpar na mão).
+RETENTION_DAYS = 30
+# Idade mínima (horas) para tratar um envio sem trabalho como órfão. Evita
+# apagar um arquivo recém-enviado que ainda não virou trabalho.
+ORPHAN_MIN_AGE_H = 6
+
 ALLOWED_EXTENSIONS = {
     # áudio
     ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".oga",

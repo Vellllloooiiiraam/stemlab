@@ -55,6 +55,17 @@ def main() -> int:
 
     manager.start()
 
+    # Limpeza de arranque: nada está em execução ainda, então sobras em
+    # uploads/ ou output/ (de um fechamento anterior) podem sair com segurança.
+    try:
+        orphan = manager.cleanup_orphans(min_age_h=0)
+        expired = manager.purge_expired()
+        if orphan["uploads"] or orphan["dirs"] or expired:
+            print(f"  [limpeza] órfãos: {orphan['uploads']} envio(s), "
+                  f"{orphan['dirs']} pasta(s); expirados: {expired}")
+    except Exception:  # nunca impedir o servidor de subir
+        pass
+
     url = f"http://{HOST}:{PORT}/"
     print(BANNER)
     print(f"  Interface: {url}")
