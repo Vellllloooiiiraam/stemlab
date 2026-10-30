@@ -15,8 +15,8 @@ Motor de IA: [Demucs](https://github.com/facebookresearch/demucs) (Meta, código
    Python 3.13 e as dependências sozinho — **não é preciso ter Python instalado**.
 2. Depois, dê dois cliques em **`Iniciar StemLab.bat`**
 3. O navegador abre sozinho em `http://127.0.0.1:8765`
-3. Arraste um arquivo de música → escolha o modelo → **Separar faixas**
-4. Quando terminar, clique em **Ouvir** para abrir o player
+4. Arraste um arquivo de música → escolha o modelo → **Separar faixas**
+5. Quando terminar, clique em **Ouvir** para abrir o player
 
 Para encerrar: feche a janela preta (ou Ctrl+C nela).
 
