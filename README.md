@@ -58,10 +58,12 @@ Para encerrar: feche a janela preta (ou Ctrl+C nela).
 ```
 stemlab/
 ├─ Iniciar StemLab.bat   ← use este
-├─ instalar.bat          ← recria o ambiente do zero
+├─ instalar.bat          ← instala o ambiente (baixa o Python)
 ├─ run.py                ← servidor
 ├─ app/                  ← backend (FastAPI + Demucs)
 ├─ web/                  ← interface (HTML/CSS/JS)
+├─ build_exe.ps1         ← gera o executável portátil (opcional)
+├─ stemlab.spec          ← receita do PyInstaller (usada pelo build)
 ├─ uploads/              ← áudios enviados
 ├─ output/<id>/stems/    ← faixas geradas
 └─ jobs.json             ← histórico
@@ -92,6 +94,36 @@ O `.zip` e o player aparecem assim que o trabalho termina.
 
 Na primeira separação o Demucs baixa os pesos do modelo (~80 MB) do Hugging Face.
 A interface mostra "Carregando modelo (na primeira vez ele é baixado…)" — deixe rodar.
+
+---
+
+## Gerar o executável portátil (opcional)
+
+Se quiser enviar o StemLab para alguém que **não quer instalar nada**, gere o
+pacote portátil:
+
+```powershell
+.\build_exe.ps1
+```
+
+Sai daí:
+
+| Arquivo | O que é |
+|---|---|
+| `dist\StemLab\StemLab.exe` | o programa — abra este arquivo |
+| `StemLab-portatil.zip` | o pacote pronto para enviar (~200 MB) |
+
+A pessoa extrai o `.zip` e abre `StemLab.exe`: o **ffmpeg vai embutido**, então
+não precisa instalar ffmpeg nem Python.
+
+Os dados (áudios enviados, faixas e histórico) ficam numa pasta
+`StemLab dados`, criada ao lado do `.exe` — assim o pacote não é poluído.
+
+Para gerar, é preciso o `.venv` do `instalar.bat` e o PyInstaller nele:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe pyinstaller imageio-ffmpeg
+```
 
 ---
 

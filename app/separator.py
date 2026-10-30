@@ -40,12 +40,39 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def locate_ffmpeg() -> bool:
-    """Garante o ffmpeg no PATH, procurando nos locais usuais de instalação.
+def _prepend_path(directory) -> None:
+    """Coloca um diretório no começo do PATH do processo."""
+    os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
 
-    O Demucs precisa do binário `ffmpeg` para ler/gravar mp3, m4a etc.
+
+def demucs_prefix() -> list[str]:
+    """Comando que inicia o Demucs.
+
+    * Empacotado (`StemLab.exe`): o próprio executável, no modo `--demucs`.
+    * Desenvolvimento: `run.py --demucs`.
+
+    Nos dois casos quem roda o Demucs é `run_demucs`, que instala o substituto
+    do `ffprobe` antes de começar (ver `install_ffprobe_compat`).
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--demucs"]
+    return [python_executable(), str(BASE_DIR / "run.py"), "--demucs"]
+
+
+def locate_ffmpeg() -> bool:
+    """Garante o ffmpeg no PATH.
+
+    Ordem: binário já disponível → `bin/` embutido no pacote portátil →
+    instalações usuais (winget/chocolatey). O Demucs precisa do `ffmpeg` para
+    ler e gravar mp3, m4a etc.
     """
     if ffmpeg_available():
+        return True
+
+    from .config import BUNDLED_BIN
+
+    if (BUNDLED_BIN / "ffmpeg.exe").is_file():
+        _prepend_path(BUNDLED_BIN)
         return True
 
     local = os.environ.get("LOCALAPPDATA", "")
@@ -62,10 +89,10 @@ def locate_ffmpeg() -> bool:
         if not root.is_dir():
             continue
         if (root / "ffmpeg.exe").is_file():
-            os.environ["PATH"] = str(root) + os.pathsep + os.environ["PATH"]
+            _prepend_path(root)
             return True
         for found in root.rglob("ffmpeg.exe"):
-            os.environ["PATH"] = str(found.parent) + os.pathsep + os.environ["PATH"]
+            _prepend_path(found.parent)
             return True
     return False
 
@@ -214,16 +241,15 @@ def build_command(
     segment: Optional[int] = None,
     karaoke: bool = False,
 ) -> list[str]:
-    """Monta os argumentos passados ao Demucs (via `run.py --demucs`).
+    """Monta os argumentos passados ao Demucs (`demucs_prefix()` + opções).
 
-    Chamamos o próprio `run.py` em vez de `-m demucs.separate` para que o
-    processo do Demucs instale o substituto do `ffprobe` antes de começar.
+    O Demucs roda via `run.py --demucs` (ou pelo próprio .exe, quando
+    empacotado) para que o substituto do `ffprobe` seja instalado antes.
     """
     if model_id not in MODEL_BY_ID:
         raise SeparationError(f"Modelo desconhecido: {model_id}")
 
-    cmd = [
-        python_executable(), str(BASE_DIR / "run.py"), "--demucs",
+    cmd = demucs_prefix() + [
         "-n", model_id,
         "-o", str(out_dir),
         "--filename", "{stem}.{ext}",

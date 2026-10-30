@@ -1,13 +1,32 @@
 """StemLab — configuração central e catálogo de modelos."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-UPLOADS_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "output"
-WEB_DIR = BASE_DIR / "web"
-JOBS_FILE = BASE_DIR / "jobs.json"
+# Empacotado com PyInstaller (StemLab.exe) o código roda de dentro do pacote e
+# os caminhos precisam ser resolvidos de outro jeito.
+FROZEN = bool(getattr(sys, "frozen", False))
+
+if FROZEN:
+    # Pasta onde está o .exe (o pacote portátil inteiro).
+    BASE_DIR = Path(sys.executable).resolve().parent
+    # Recursos embutidos (web/, bin/) ficam em `_internal`.
+    RUNTIME_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+    # Dados do usuário ficam ao lado do .exe, para não poluir o pacote.
+    DATA_DIR = BASE_DIR / "StemLab dados"
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    RUNTIME_DIR = BASE_DIR
+    DATA_DIR = BASE_DIR
+
+UPLOADS_DIR = DATA_DIR / "uploads"
+OUTPUT_DIR = DATA_DIR / "output"
+JOBS_FILE = DATA_DIR / "jobs.json"
+WEB_DIR = RUNTIME_DIR / "web"
+
+# Binários que viajam junto do executável (ffmpeg).
+BUNDLED_BIN = RUNTIME_DIR / "bin"
 
 HOST = "127.0.0.1"
 PORT = 8765

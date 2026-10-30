@@ -21,6 +21,15 @@ models/
 *.pt
 *.pth
 
+# Build do executavel portatil
+build/
+dist/
+build_bin/
+StemLab-portatil.zip
+
+# Dados do executavel portatil (ficam ao lado do .exe)
+StemLab dados/
+
 # Arquivos temporários / de sistema
 *.tmp
 *.log
