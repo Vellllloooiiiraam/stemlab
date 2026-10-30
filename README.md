@@ -11,8 +11,10 @@ Motor de IA: [Demucs](https://github.com/facebookresearch/demucs) (Meta, código
 
 ## Como usar
 
-1. Dê dois cliques em **`Iniciar StemLab.bat`**
-2. O navegador abre sozinho em `http://127.0.0.1:8765`
+1. Na **primeira vez**, dê dois cliques em **`instalar.bat`**. Ele baixa o
+   Python 3.13 e as dependências sozinho — **não é preciso ter Python instalado**.
+2. Depois, dê dois cliques em **`Iniciar StemLab.bat`**
+3. O navegador abre sozinho em `http://127.0.0.1:8765`
 3. Arraste um arquivo de música → escolha o modelo → **Separar faixas**
 4. Quando terminar, clique em **Ouvir** para abrir o player
 
@@ -98,7 +100,8 @@ A interface mostra "Carregando modelo (na primeira vez ele é baixado…)" — d
 | Sintoma | Causa provável / solução |
 |---|---|
 | "ffmpeg ausente" no cabeçalho | Rode `winget install Gyan.FFmpeg` e reabra o `Iniciar StemLab.bat` |
-| Erro ao instalar o ambiente | Rode `instalar.bat`; ele recria `.venv` do zero |
+| Erro ao instalar o ambiente | Rode `instalar.bat`; ele baixa o Python 3.13 e reinstala as dependências |
+| Mensagem **"Python não foi encontrado"** (ou abre a Microsoft Store) ao instalar | Use o `instalar.bat` atualizado: ele **não** depende de Python já instalado |
 | Separação muito lenta | Use `mdx_q` ou `mdx_extra_q`, e `shifts = 0` |
 | "Formato não suportado" | Converta para wav/mp3 antes |
 | Porta 8765 ocupada | Feche outra instância do StemLab |
